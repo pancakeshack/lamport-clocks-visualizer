@@ -3,12 +3,14 @@ import "./App.css";
 
 type Process = string;
 type Kind = "local" | "send" | "receive";
+type Vector = Record<Process, number>;
 type Message = {
   id: string;
   name: string;
   from: Process;
   to: Process;
   timestamp: number;
+  vector: Vector;
   sendIndex: number;
   delivered?: boolean;
   receiveIndex?: number;
@@ -18,6 +20,7 @@ type Event = {
   kind: Kind;
   label: string;
   clock: number;
+  vector: Vector;
   messageId?: string;
   from?: number;
 };
@@ -32,6 +35,13 @@ const defaultMeta: Record<
 };
 const defaultProcesses: Process[] = ["A", "B", "C"];
 const colors = ["#ed6a5e", "#7657e8", "#0ca88f", "#d08a2e", "#d45395"];
+const makeVectors = (items: Process[]) =>
+  Object.fromEntries(
+    items.map((process) => [
+      process,
+      Object.fromEntries(items.map((item) => [item, 0])),
+    ]),
+  ) as Record<Process, Vector>;
 
 function Glyph({ kind }: { kind: Kind }) {
   return <>{kind === "send" ? "↗" : kind === "receive" ? "↙" : "•"}</>;
@@ -53,6 +63,9 @@ export default function App() {
     B: 0,
     C: 0,
   });
+  const [vectors, setVectors] = useState<Record<Process, Vector>>(() =>
+    makeVectors(defaultProcesses),
+  );
   const [from, setFrom] = useState<Process>("A");
   const [to, setTo] = useState<Process>("B");
   const [messageName, setMessageName] = useState("");
@@ -68,6 +81,8 @@ export default function App() {
     () => Object.fromEntries(messages.map((message) => [message.id, message])),
     [messages],
   );
+  const vectorText = (vector: Vector) =>
+    `[${processes.map((process) => vector[process] ?? 0).join(", ")}]`;
 
   const addEvent = (event: Event) => {
     setEvents((current) => [...current, event]);
@@ -75,24 +90,29 @@ export default function App() {
   };
   const local = (process: Process) => {
     const next = clocks[process] + 1;
+    const vector = { ...vectors[process], [process]: vectors[process][process] + 1 };
     setClocks((current) => ({ ...current, [process]: next }));
-    addEvent({ process, kind: "local", label: "Internal event", clock: next });
+    setVectors((current) => ({ ...current, [process]: vector }));
+    addEvent({ process, kind: "local", label: "Internal event", clock: next, vector });
   };
   const send = () => {
     if (from === to) return;
     const timestamp = clocks[from] + 1;
+    const vector = { ...vectors[from], [from]: vectors[from][from] + 1 };
     const id = `m${messages.length + 1}`;
     setClocks((current) => ({ ...current, [from]: timestamp }));
+    setVectors((current) => ({ ...current, [from]: vector }));
     const name = messageName.trim() || id;
     setMessages((current) => [
       ...current,
-      { id, name, from, to, timestamp, sendIndex: events.length },
+      { id, name, from, to, timestamp, vector, sendIndex: events.length },
     ]);
     addEvent({
       process: from,
       kind: "send",
       label: `Send ${name}`,
       clock: timestamp,
+      vector,
       messageId: id,
     });
     setMessageName("");
@@ -101,7 +121,15 @@ export default function App() {
     const message = messages.find((item) => item.id === id);
     if (!message || message.delivered) return;
     const next = Math.max(clocks[message.to], message.timestamp) + 1;
+    const vector = Object.fromEntries(
+      processes.map((process) => [
+        process,
+        Math.max(vectors[message.to][process] ?? 0, message.vector[process] ?? 0),
+      ]),
+    ) as Vector;
+    vector[message.to] += 1;
     setClocks((current) => ({ ...current, [message.to]: next }));
+    setVectors((current) => ({ ...current, [message.to]: vector }));
     setMessages((current) =>
       current.map((item) =>
         item.id === id
@@ -114,6 +142,7 @@ export default function App() {
       kind: "receive",
       label: `Receive ${message.name}`,
       clock: next,
+      vector,
       messageId: id,
       from: message.timestamp,
     });
@@ -122,6 +151,7 @@ export default function App() {
     setEvents([]);
     setMessages([]);
     setClocks(Object.fromEntries(processes.map((process) => [process, 0])));
+    setVectors(makeVectors(processes));
     setSelected(null);
   };
   const loadExample = () => {
@@ -130,23 +160,26 @@ export default function App() {
     setEvents([]);
     setMessages([]);
     setClocks({ A: 0, B: 0, C: 0 });
+    setVectors(makeVectors(defaultProcesses));
     setSelected(null);
     const exampleEvents: Event[] = [
-      { process: "A", kind: "local", label: "Internal event", clock: 1 },
-      { process: "B", kind: "local", label: "Internal event", clock: 1 },
+      { process: "A", kind: "local", label: "Internal event", clock: 1, vector: { A: 1, B: 0, C: 0 } },
+      { process: "B", kind: "local", label: "Internal event", clock: 1, vector: { A: 0, B: 1, C: 0 } },
       {
         process: "A",
         kind: "send",
         label: "Send m1",
         clock: 2,
+        vector: { A: 2, B: 0, C: 0 },
         messageId: "m1",
       },
-      { process: "C", kind: "local", label: "Internal event", clock: 1 },
+      { process: "C", kind: "local", label: "Internal event", clock: 1, vector: { A: 0, B: 0, C: 1 } },
       {
         process: "B",
         kind: "receive",
         label: "Receive m1",
         clock: 3,
+        vector: { A: 2, B: 2, C: 0 },
         messageId: "m1",
         from: 2,
       },
@@ -155,6 +188,7 @@ export default function App() {
         kind: "send",
         label: "Send m2",
         clock: 4,
+        vector: { A: 2, B: 3, C: 0 },
         messageId: "m2",
       },
       {
@@ -162,6 +196,7 @@ export default function App() {
         kind: "receive",
         label: "Receive m2",
         clock: 5,
+        vector: { A: 2, B: 3, C: 2 },
         messageId: "m2",
         from: 4,
       },
@@ -174,6 +209,7 @@ export default function App() {
         from: "A",
         to: "B",
         timestamp: 2,
+        vector: { A: 2, B: 0, C: 0 },
         sendIndex: 2,
         delivered: true,
         receiveIndex: 4,
@@ -184,12 +220,14 @@ export default function App() {
         from: "B",
         to: "C",
         timestamp: 4,
+        vector: { A: 2, B: 3, C: 0 },
         sendIndex: 5,
         delivered: true,
         receiveIndex: 6,
       },
     ]);
     setClocks({ A: 2, B: 4, C: 5 });
+    setVectors({ A: { A: 2, B: 0, C: 0 }, B: { A: 2, B: 3, C: 0 }, C: { A: 2, B: 3, C: 2 } });
   };
   const addProcess = () => {
     if (processes.length >= 5) return;
@@ -204,6 +242,11 @@ export default function App() {
       },
     }));
     setClocks((current) => ({ ...current, [id]: 0 }));
+    setVectors((current) => {
+      const next = Object.fromEntries(Object.entries(current).map(([process, vector]) => [process, { ...vector, [id]: 0 }])) as Record<Process, Vector>;
+      next[id] = Object.fromEntries([...processes, id].map((process) => [process, 0]));
+      return next;
+    });
   };
   const undo = () => {
     const last = events.at(-1);
@@ -212,8 +255,10 @@ export default function App() {
     const previousClock =
       remaining.filter((event) => event.process === last.process).at(-1)
         ?.clock ?? 0;
+    const previousVector = remaining.filter((event) => event.process === last.process).at(-1)?.vector ?? Object.fromEntries(processes.map((process) => [process, 0]));
     setEvents(remaining);
     setClocks((current) => ({ ...current, [last.process]: previousClock }));
+    setVectors((current) => ({ ...current, [last.process]: previousVector }));
     setSelected(null);
     if (last.kind === "send" && last.messageId)
       setMessages((current) =>
@@ -246,7 +291,7 @@ export default function App() {
           <em>lab</em>
         </div>
         <div className="header-center">
-          BUILD A DISTRIBUTED SYSTEM, ONE EVENT AT A TIME
+          LAMPORT + VECTOR CLOCKS, SIDE BY SIDE
         </div>
         <div>
           <button className="quiet-button" onClick={loadExample}>
@@ -277,9 +322,10 @@ export default function App() {
             when each message arrives.
           </p>
           <div className="rule">
-            <span>RECEIVE RULE</span>
+            <span>LAMPORT RECEIVE RULE</span>
             <strong>max(local, message) + 1</strong>
           </div>
+          <div className="vector-rule"><span>VECTOR RECEIVE RULE</span><strong>component max, then +1 locally</strong></div>
           <div className="legend">
             <span>
               <i className="local-dot" /> internal event
@@ -325,7 +371,7 @@ export default function App() {
                   <b>{meta[id].name}</b>
                   <span>{meta[id].role}</span>
                 </div>
-                <strong style={{ color: meta[id].color }}>{clocks[id]}</strong>
+                <div className="clock-pair" style={{ "--clock-color": meta[id].color } as React.CSSProperties}><span><i>L</i><b>{clocks[id]}</b></span><span><i>V</i><b>{vectorText(vectors[id])}</b></span></div>
               </div>
             ))}
           </div>
@@ -390,7 +436,7 @@ export default function App() {
                   <span className="event-node">
                     <Glyph kind={event.kind} />
                   </span>
-                  <b>{event.clock}</b>
+                  <b>L {event.clock}</b>
                   <small>{message ? label(message) : "internal"}</small>
                 </button>
               );
@@ -409,7 +455,7 @@ export default function App() {
                 <span>
                   {label(message)} <b>{message.timestamp}</b>
                 </span>
-                <small>Click to deliver to {message.to} →</small>
+                <small>to {message.to} · V {vectorText(message.vector)} · click to deliver →</small>
               </button>
             ))}
             {!events.length && (
@@ -518,6 +564,7 @@ export default function App() {
             <p>{detail}</p>
           </div>
         </div>
+        <div className="clock-compare"><div><span>LAMPORT</span><b>{activeEvent ? activeEvent.clock : "—"}</b><small>one scalar timestamp</small></div><div><span>VECTOR</span><b>{activeEvent ? vectorText(activeEvent.vector) : "—"}</b><small>knowledge of every process</small></div></div>
         <div className="queue">
           <span>MESSAGE QUEUE</span>
           {pending.length ? (
@@ -525,7 +572,7 @@ export default function App() {
               <button key={message.id} onClick={() => deliver(message.id)}>
                 <b>{label(message)}</b>
                 <span>
-                  {message.from} → {message.to}, timestamp {message.timestamp}
+                  {message.from} → {message.to} · L {message.timestamp} · V {vectorText(message.vector)}
                 </span>
                 <i>Deliver →</i>
               </button>
